@@ -509,6 +509,18 @@ func (a *SUBController) subs(c *gin.Context) {
 			if err == nil && strings.TrimSpace(incyRules) != "" {
 				result.WriteString(incyRules)
 				result.WriteString("\n")
+
+				// INCY clients read the "Routing" HTTP header with higher
+				// priority than a routing string embedded in the body
+				// (documented client behavior: headers override body).
+				// ApplyCommonHeaders above unconditionally sets that header
+				// from the Happ routing rules, so INCY clients were always
+				// receiving Happ's profile regardless of this field.
+				// Override it here for requests that identify as INCY.
+				
+				if strings.Contains(strings.ToUpper(userAgent), "INCY") {
+					c.Writer.Header().Set("Routing", incyRules)
+				}
 			}
 		}
 
