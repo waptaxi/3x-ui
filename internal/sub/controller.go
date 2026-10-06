@@ -517,7 +517,7 @@ func (a *SUBController) subs(c *gin.Context) {
 				// from the Happ routing rules, so INCY clients were always
 				// receiving Happ's profile regardless of this field.
 				// Override it here for requests that identify as INCY.
-				
+
 				if strings.Contains(strings.ToUpper(userAgent), "INCY") {
 					c.Writer.Header().Set("Routing", incyRules)
 				}
