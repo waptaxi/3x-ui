@@ -181,9 +181,20 @@ func (s *SubJsonService) GetJson(subId string, host string, alwaysReturnArray bo
 		}
 		return entries[i].id < entries[j].id
 	})
-	var configArray []json_util.RawMessage
+	// One doc per slot: an inbound's or balancer's doc claims the slot its
+	// sortIndex names, an external's fills a slot the others leave free.
+	type jsonSlotDoc struct {
+		sortSlot
+		raw json_util.RawMessage
+	}
+	docs := make([]jsonSlotDoc, 0, len(entries))
 	for _, entry := range entries {
-		configArray = append(configArray, entry.configs...)
+		for _, config := range entry.configs {
+			docs = append(docs, jsonSlotDoc{
+				sortSlot: sortSlot{sortIndex: entry.sortIndex, indexed: true},
+				raw:      config,
+			})
+		}
 	}
 	for _, ext := range externalLinks {
 		if ext.Enable {
@@ -211,8 +222,17 @@ func (s *SubJsonService) GetJson(subId string, host string, alwaysReturnArray bo
 			newConfigJson["outbounds"] = newOutbounds
 			newConfigJson["remarks"] = remark
 			newConfig, _ := json.MarshalIndent(newConfigJson, "", "  ")
-			configArray = append(configArray, newConfig)
+			docs = append(docs, jsonSlotDoc{raw: newConfig})
 		}
+	}
+
+	docSlots := make([]sortSlot, len(docs))
+	for i, doc := range docs {
+		docSlots[i] = doc.sortSlot
+	}
+	configArray := make([]json_util.RawMessage, 0, len(docs))
+	for _, slot := range assignSortSlots(docSlots) {
+		configArray = append(configArray, docs[slot-1].raw)
 	}
 
 	if len(configArray) == 0 && !hasInactiveExternal {

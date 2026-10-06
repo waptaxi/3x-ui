@@ -461,6 +461,91 @@ func (s *SubService) resolveInfoNodeRemark(subId string, uniqueEmails []string, 
 	return infoNodeNone, ""
 }
 
+// subEntry is one subscription line plus the email it belongs to; inbound lines
+// additionally carry the subSortIndex that names their slot in the final list.
+type subEntry struct {
+	sortIndex int
+	inbound   bool
+	link      string
+	email     string
+}
+
+// sortSlot is one item's input to assignSortSlots: an indexed item claims the
+// 1-based slot named by sortIndex, an unindexed one fills a slot left free.
+type sortSlot struct {
+	sortIndex int
+	indexed   bool
+}
+
+// assignSortSlots returns the slot every item occupies. Indexed items must come
+// first, already ordered by sortIndex, as the subscription query returns them.
+func assignSortSlots(slots []sortSlot) []int {
+	n := len(slots)
+	indexed := 0
+	for _, s := range slots {
+		if s.indexed {
+			indexed++
+		}
+	}
+
+	taken := make([]bool, n+1)
+	out := make([]int, n)
+	pos := 0
+	for i, s := range slots {
+		if !s.indexed {
+			continue
+		}
+		// Clamp to the last slot still free for an indexed item, so one large
+		// index cannot strand the lower-indexed items behind it (n >= indexed).
+		target := min(max(s.sortIndex, 1), n-(indexed-1-pos))
+		slot := firstFreeSlot(taken, target, n)
+		taken[slot] = true
+		out[i] = slot
+		pos++
+	}
+
+	cursor := 1
+	for i := range slots {
+		if slots[i].indexed {
+			continue
+		}
+		for cursor <= n && taken[cursor] {
+			cursor++
+		}
+		out[i] = cursor
+		taken[cursor] = true
+	}
+	return out
+}
+
+func firstFreeSlot(taken []bool, target, n int) int {
+	for p := target; p <= n; p++ {
+		if !taken[p] {
+			return p
+		}
+	}
+	for p := 1; p < target; p++ {
+		if !taken[p] {
+			return p
+		}
+	}
+	return n // unreachable: the two loops above cover every slot.
+}
+
+// placeSubEntries reorders subscription lines so an inbound's line lands on the
+// slot its subSortIndex names and external lines fill the slots left free.
+func placeSubEntries(entries []subEntry) []subEntry {
+	slots := make([]sortSlot, len(entries))
+	for i, e := range entries {
+		slots[i] = sortSlot{sortIndex: e.sortIndex, indexed: e.inbound}
+	}
+	out := make([]subEntry, len(entries))
+	for i, slot := range assignSortSlots(slots) {
+		out[slot-1] = entries[i]
+	}
+	return out
+}
+
 func (s *SubService) getSubs(subId string) ([]string, []string, int64, xray.ClientTraffic, error) {
 	var result []string
 	var emails []string
@@ -480,6 +565,7 @@ func (s *SubService) getSubs(subId string) ([]string, []string, int64, xray.Clie
 	}
 
 	seenEmails := make(map[string]struct{})
+	var entries []subEntry
 	for _, inbound := range inbounds {
 		clients := s.matchingClients(inbound, subId)
 		if len(clients) == 0 {
@@ -505,8 +591,12 @@ func (s *SubService) getSubs(subId string) ([]string, []string, int64, xray.Clie
 			} else {
 				link = s.GetLink(inbound, client.Email)
 			}
-			result = append(result, link)
-			emails = append(emails, client.Email)
+			entries = append(entries, subEntry{
+				sortIndex: inbound.SubSortIndex,
+				inbound:   true,
+				link:      link,
+				email:     client.Email,
+			})
 			seenEmails[client.Email] = struct{}{}
 		}
 	}
@@ -516,17 +606,24 @@ func (s *SubService) getSubs(subId string) ([]string, []string, int64, xray.Clie
 		}
 		if !ext.Active {
 			seenEmails[ext.Email] = struct{}{}
-			if result == nil {
-				result = []string{}
+			if entries == nil {
+				entries = []subEntry{}
 			}
 			continue
 		}
 		for _, el := range expandEntry(ext) {
 			if link := applyRemarkToLink(el.Link, el.Name); link != "" {
-				result = append(result, link)
-				emails = append(emails, ext.Email)
+				entries = append(entries, subEntry{link: link, email: ext.Email})
 				seenEmails[ext.Email] = struct{}{}
 			}
+		}
+	}
+
+	if entries != nil {
+		result = make([]string, 0, len(entries))
+		for _, e := range placeSubEntries(entries) {
+			result = append(result, e.link)
+			emails = append(emails, e.email)
 		}
 	}
 
